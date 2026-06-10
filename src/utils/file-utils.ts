@@ -49,13 +49,31 @@ export function isWriteAllowed(filePath: string): boolean {
   return isWithinRoots(filePath, getAllowedWriteRoots());
 }
 
+/**
+ * True if filePath is read-allowed AND is not a directory. `statSync` follows
+ * symlinks, so this also excludes symlinks that point at directories (which
+ * glob's `nodir` option does not catch and which would otherwise cause an
+ * EISDIR error when read).
+ */
+function isSearchableFile(filePath: string): boolean {
+  if (!isReadAllowed(filePath)) {
+    return false;
+  }
+  try {
+    return !statSync(filePath).isDirectory();
+  } catch {
+    // Broken symlink or vanished file: skip it rather than fail the search.
+    return false;
+  }
+}
+
 export async function searchFiles(filePattern?: string): Promise<string[]> {
   if (!filePattern) {
     const files = await glob('**/*', {
-      ignore: ['node_modules/**', 'dist/**', '.git/**'],
+      ignore: ['**/node_modules/**', '**/dist/**', '**/.git/**'],
       nodir: true,
     });
-    return files.filter(isReadAllowed);
+    return files.filter(isSearchableFile);
   }
 
   let pattern = filePattern;
@@ -75,10 +93,10 @@ export async function searchFiles(filePattern?: string): Promise<string[]> {
   }
 
   const files = await glob(pattern, {
-    ignore: ['node_modules/**', 'dist/**', '.git/**'],
+    ignore: ['**/node_modules/**', '**/dist/**', '**/.git/**'],
     nodir: true,
   });
-  return files.filter(isReadAllowed);
+  return files.filter(isSearchableFile);
 }
 
 export function readFileContent(filePath: string): string {

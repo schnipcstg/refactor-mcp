@@ -1,5 +1,12 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, existsSync, rmSync, mkdirSync, readFileSync } from 'fs';
+import {
+  writeFileSync,
+  existsSync,
+  rmSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+} from 'fs';
 import { resolve } from 'path';
 import {
   searchFiles,
@@ -157,6 +164,41 @@ describe('File Utils', () => {
           ).toBe(true);
         }
       });
+    });
+
+    test('excludes node_modules/dist/.git even with an absolute pattern', async () => {
+      // Build a nested tree containing dirs that must always be ignored.
+      mkdirSync(`${testDir}/pkg/src`, { recursive: true });
+      mkdirSync(`${testDir}/pkg/node_modules/dep`, { recursive: true });
+      mkdirSync(`${testDir}/pkg/dist`, { recursive: true });
+      mkdirSync(`${testDir}/pkg/.git`, { recursive: true });
+      writeFileSync(`${testDir}/pkg/src/keep.js`, 'keep');
+      writeFileSync(`${testDir}/pkg/node_modules/dep/index.js`, 'ignore');
+      writeFileSync(`${testDir}/pkg/dist/bundle.js`, 'ignore');
+      writeFileSync(`${testDir}/pkg/.git/config`, 'ignore');
+
+      // Use an ABSOLUTE pattern (the case that previously bypassed the
+      // relative ignore globs and enumerated node_modules/.git).
+      const absPattern = `${resolve(testDir)}/pkg/**`;
+      const files = await searchFiles(absPattern);
+
+      expect(files.some(f => f.includes('src/keep.js'))).toBe(true);
+      expect(files.some(f => f.includes('/node_modules/'))).toBe(false);
+      expect(files.some(f => f.includes('/dist/'))).toBe(false);
+      expect(files.some(f => f.includes('/.git/'))).toBe(false);
+    });
+
+    test('excludes symlinks that point at directories', async () => {
+      mkdirSync(`${testDir}/proj/lib`, { recursive: true });
+      writeFileSync(`${testDir}/proj/lib/mod.js`, 'module');
+      // lib64 -> lib: a symlink to a directory. glob's nodir does not catch
+      // this, so it would otherwise be returned and cause EISDIR on read.
+      symlinkSync('lib', `${testDir}/proj/lib64`);
+
+      const files = await searchFiles(`${resolve(testDir)}/proj/**`);
+
+      expect(files.some(f => f.endsWith('lib/mod.js'))).toBe(true);
+      expect(files.some(f => f.endsWith('/lib64'))).toBe(false);
     });
   });
 
