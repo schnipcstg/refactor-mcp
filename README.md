@@ -189,6 +189,55 @@ Add to your MCP client configuration:
 }
 ```
 
+### Restricting file access (read / write allowlists)
+
+By default, `refactor-mcp` can read and modify any file under the current working
+directory. You can restrict reads and writes independently with two environment variables:
+
+- `REFACTOR_MCP_ALLOWED_READ_DIRS` — comma-separated directories the server may read from
+  (also limits which files search/refactor will discover).
+- `REFACTOR_MCP_ALLOWED_WRITE_DIRS` — comma-separated directories the server may write to.
+
+```json
+{
+  "mcpServers": {
+    "refactor-mcp": {
+      "command": "npx",
+      "args": ["@myuon/refactor-mcp@latest"],
+      "env": {
+        "REFACTOR_MCP_ALLOWED_READ_DIRS": "src,tests,docs",
+        "REFACTOR_MCP_ALLOWED_WRITE_DIRS": "src"
+      }
+    }
+  }
+}
+```
+
+- Paths may be absolute or relative (resolved against the server's working directory).
+- Operations outside the relevant allowlist are refused, including `../` traversal.
+- Each variable defaults independently to the current working directory when unset.
+- The two are independent: a folder in the read list but not the write list is searchable
+  and readable, but refactor attempts to modify it will fail. To refactor a file it must be
+  in **both** lists.
+- To allow reading (or writing) **anywhere on the filesystem**, set the relevant variable to
+  the filesystem root `/`. This effectively disables the restriction — including the
+  `../` traversal protection — so use it only when you intentionally want unrestricted
+  access:
+
+  ```json
+  {
+    "mcpServers": {
+      "refactor-mcp": {
+        "command": "npx",
+        "args": ["@myuon/refactor-mcp@latest"],
+        "env": {
+          "REFACTOR_MCP_ALLOWED_READ_DIRS": "/"
+        }
+      }
+    }
+  }
+  ```
+
 ## Architecture
 
 - **Framework**: Model Context Protocol SDK for TypeScript

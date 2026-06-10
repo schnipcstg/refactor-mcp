@@ -1,9 +1,14 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { writeFileSync, existsSync, rmSync, mkdirSync, readFileSync } from 'fs';
+import { resolve } from 'path';
 import {
   searchFiles,
   readFileContent,
   writeFileContent,
+  getAllowedReadRoots,
+  getAllowedWriteRoots,
+  isReadAllowed,
+  isWriteAllowed,
 } from '../../src/utils/file-utils.js';
 
 describe('File Utils', () => {
@@ -295,7 +300,9 @@ describe('File Utils', () => {
         filePath: '/invalid/path/that/does/not/exist.txt',
         content: 'content',
         expected: {
-          shouldThrow: /Failed to write file/,
+          // This absolute path is outside the default write allowlist (CWD),
+          // so it is refused by the allowlist check before fs is touched.
+          shouldThrow: /outside allowed write directories/,
         },
       },
       {
@@ -425,6 +432,144 @@ describe('File Utils', () => {
           expect(foundFiles).toHaveLength(3);
         }
       });
+    });
+  });
+
+  describe('read/write allowlist enforcement', () => {
+    const readDir = 'tests/temp-read'; // readable + writable
+    const readOnlyDir = 'tests/temp-readonly'; // readable, NOT writable
+    const outsideDir = 'tests/temp-outside'; // neither
+    let savedRead: string | undefined;
+    let savedWrite: string | undefined;
+
+    beforeEach(() => {
+      savedRead = process.env.REFACTOR_MCP_ALLOWED_READ_DIRS;
+      savedWrite = process.env.REFACTOR_MCP_ALLOWED_WRITE_DIRS;
+
+      for (const d of [readDir, readOnlyDir, outsideDir]) {
+        if (existsSync(d)) rmSync(d, { recursive: true, force: true });
+        mkdirSync(d, { recursive: true });
+      }
+      writeFileSync(`${readDir}/file.txt`, 'in read+write');
+      writeFileSync(`${readOnlyDir}/file.txt`, 'in read-only');
+      writeFileSync(`${outsideDir}/secret.txt`, 'do not touch');
+
+      // Reads allowed in readDir + readOnlyDir; writes allowed only in readDir.
+      process.env.REFACTOR_MCP_ALLOWED_READ_DIRS = `${readDir},${readOnlyDir}`;
+      process.env.REFACTOR_MCP_ALLOWED_WRITE_DIRS = readDir;
+    });
+
+    afterEach(() => {
+      if (savedRead === undefined)
+        delete process.env.REFACTOR_MCP_ALLOWED_READ_DIRS;
+      else process.env.REFACTOR_MCP_ALLOWED_READ_DIRS = savedRead;
+      if (savedWrite === undefined)
+        delete process.env.REFACTOR_MCP_ALLOWED_WRITE_DIRS;
+      else process.env.REFACTOR_MCP_ALLOWED_WRITE_DIRS = savedWrite;
+
+      for (const d of [readDir, readOnlyDir, outsideDir]) {
+        if (existsSync(d)) rmSync(d, { recursive: true, force: true });
+      }
+    });
+
+    test('read roots default to cwd when unset', () => {
+      delete process.env.REFACTOR_MCP_ALLOWED_READ_DIRS;
+      expect(getAllowedReadRoots()).toEqual([resolve(process.cwd())]);
+    });
+
+    test('write roots default to cwd when unset', () => {
+      delete process.env.REFACTOR_MCP_ALLOWED_WRITE_DIRS;
+      expect(getAllowedWriteRoots()).toEqual([resolve(process.cwd())]);
+    });
+
+    test('parses comma-separated roots and trims whitespace', () => {
+      process.env.REFACTOR_MCP_ALLOWED_READ_DIRS = ' src , tests ';
+      expect(getAllowedReadRoots()).toEqual([resolve('src'), resolve('tests')]);
+    });
+
+    test('read and write allowlists are independent', () => {
+      expect(isReadAllowed(`${readOnlyDir}/file.txt`)).toBe(true);
+      expect(isWriteAllowed(`${readOnlyDir}/file.txt`)).toBe(false);
+    });
+
+    test('blocks ../ traversal escapes for both', () => {
+      expect(isReadAllowed(`${readDir}/../temp-outside/secret.txt`)).toBe(
+        false
+      );
+      expect(isWriteAllowed(`${readDir}/../temp-outside/secret.txt`)).toBe(
+        false
+      );
+    });
+
+    test('readFileContent allows read-allowed path', () => {
+      expect(readFileContent(`${readOnlyDir}/file.txt`)).toBe('in read-only');
+    });
+
+    test('readFileContent throws for path outside read allowlist', () => {
+      expect(() => readFileContent(`${outsideDir}/secret.txt`)).toThrow(
+        /outside allowed read directories/
+      );
+    });
+
+    test('writeFileContent succeeds inside write allowlist', () => {
+      const target = `${readDir}/ok.txt`;
+      writeFileContent(target, 'fine');
+      expect(readFileSync(target, 'utf-8')).toBe('fine');
+    });
+
+    test('writeFileContent throws for read-only dir (read-allowed but not write-allowed)', () => {
+      const target = `${readOnlyDir}/file.txt`;
+      expect(() => writeFileContent(target, 'hacked')).toThrow(
+        /outside allowed write directories/
+      );
+      expect(readFileSync(target, 'utf-8')).toBe('in read-only');
+    });
+
+    test('writeFileContent throws for path outside all allowlists', () => {
+      const target = `${outsideDir}/secret.txt`;
+      expect(() => writeFileContent(target, 'hacked')).toThrow(
+        /outside allowed write directories/
+      );
+      expect(readFileSync(target, 'utf-8')).toBe('do not touch');
+    });
+
+    test('searchFiles excludes files outside the read allowlist', async () => {
+      const results = await searchFiles('tests/temp-*/**/*');
+      expect(results.some(f => f.includes('temp-read/file.txt'))).toBe(true);
+      expect(results.some(f => f.includes('temp-readonly/file.txt'))).toBe(
+        true
+      );
+      expect(results.some(f => f.includes('secret.txt'))).toBe(false);
+    });
+
+    test('setting root to / allows reading anywhere on the filesystem', () => {
+      // The outside dir is normally blocked by the read allowlist...
+      expect(isReadAllowed(`${outsideDir}/secret.txt`)).toBe(false);
+
+      // ...but a root of '/' permits reads anywhere, including ../ traversal.
+      process.env.REFACTOR_MCP_ALLOWED_READ_DIRS = '/';
+      expect(isReadAllowed(`${outsideDir}/secret.txt`)).toBe(true);
+      expect(isReadAllowed('/etc/hosts')).toBe(true);
+      expect(isReadAllowed(`${readDir}/../temp-outside/secret.txt`)).toBe(true);
+      expect(readFileContent(`${outsideDir}/secret.txt`)).toBe('do not touch');
+    });
+
+    test("setting write dir to '.' resolves to cwd and allows writes under it", () => {
+      // '.' resolves to the current working directory.
+      process.env.REFACTOR_MCP_ALLOWED_WRITE_DIRS = '.';
+      expect(getAllowedWriteRoots()).toEqual([resolve(process.cwd())]);
+
+      // The temp dirs live under cwd, so writes there are now allowed.
+      expect(isWriteAllowed(`${readDir}/file.txt`)).toBe(true);
+      expect(isWriteAllowed(`${readOnlyDir}/file.txt`)).toBe(true);
+      expect(isWriteAllowed(`${outsideDir}/secret.txt`)).toBe(true);
+
+      const target = `${readOnlyDir}/dot-write.txt`;
+      writeFileContent(target, 'written via .');
+      expect(readFileSync(target, 'utf-8')).toBe('written via .');
+
+      // A path outside cwd is still refused.
+      expect(isWriteAllowed('/etc/hosts')).toBe(false);
     });
   });
 });
