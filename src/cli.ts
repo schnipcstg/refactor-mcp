@@ -34,6 +34,10 @@ export async function startCli(args?: string[]) {
     '-f, --files <files>',
     'Optional file glob pattern to limit search scope'
   )
+  .option('-i, --ignore-case', 'Match case-insensitively')
+  .option('-m, --multiline', 'Multiline mode (^ and $ match line boundaries)')
+  .option('-w, --whole-word', 'Only match whole words')
+  .option('--max <n>', 'Stop after this many matches', v => parseInt(v, 10))
   .option('--print', 'Print matched content to stdout')
   .option('--matched', 'Show matched text and capture groups')
   .action(async options => {
@@ -42,6 +46,10 @@ export async function startCli(args?: string[]) {
         searchPattern: options.pattern,
         contextPattern: options.context,
         filePattern: options.files,
+        caseInsensitive: options.ignoreCase,
+        multiline: options.multiline,
+        wholeWord: options.wholeWord,
+        maxMatches: options.max,
       });
 
       if (options.print && results.length > 0) {
@@ -108,6 +116,12 @@ export async function startCli(args?: string[]) {
     '--dry-run',
     'Show what would be changed without actually modifying files'
   )
+  .option('-i, --ignore-case', 'Match case-insensitively')
+  .option('-m, --multiline', 'Multiline mode (^ and $ match line boundaries)')
+  .option('-w, --whole-word', 'Only match whole words')
+  .option('--max <n>', 'Stop after this many replacements', v =>
+    parseInt(v, 10)
+  )
   .option('--print', 'Print matched content to stdout')
   .action(async options => {
     try {
@@ -117,6 +131,10 @@ export async function startCli(args?: string[]) {
         contextPattern: options.context,
         filePattern: options.files,
         dryRun: !!options.dryRun,
+        caseInsensitive: options.ignoreCase,
+        multiline: options.multiline,
+        wholeWord: options.wholeWord,
+        maxMatches: options.max,
       });
 
       if (options.print && results.length > 0) {

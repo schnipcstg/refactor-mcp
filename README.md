@@ -17,6 +17,14 @@ Performs regex-based search and replace operations across files with advanced fi
 - `replace_pattern` (string) - Replacement pattern (supports capture groups like $1, $2)
 - `context_pattern` (string, optional) - Only replace matches within this context
 - `file_pattern` (string, optional) - Glob pattern to limit files (e.g., `*.js`, `src/**/*.ts`)
+- `dry_run` (boolean, optional) - Preview changes without writing any files
+- `case_insensitive` (boolean, optional) - Match case-insensitively (regex `i` flag)
+- `multiline` (boolean, optional) - `^`/`$` match line boundaries (regex `m` flag)
+- `whole_word` (boolean, optional) - Only match whole words (wraps pattern in `\b...\b`)
+- `max_matches` (number, optional) - Stop after this many replacements in total
+
+In addition to the human-readable summary, the tool returns `structuredContent`
+with `fileCount`, `replacementCount`, `dryRun`, and `truncated` fields.
 
 **Example:**
 ```javascript
@@ -40,6 +48,16 @@ Searches for regex patterns and returns file locations with precise line numbers
 - `search_pattern` (string) - Regular expression pattern to search for
 - `context_pattern` (string, optional) - Filter matches by surrounding context
 - `file_pattern` (string, optional) - Glob pattern to limit search scope
+- `case_insensitive` (boolean, optional) - Match case-insensitively (regex `i` flag)
+- `multiline` (boolean, optional) - `^`/`$` match line boundaries (regex `m` flag)
+- `whole_word` (boolean, optional) - Only match whole words (wraps pattern in `\b...\b`)
+- `max_matches` (number, optional) - Stop after collecting this many matches in total
+
+In addition to the human-readable summary, the tool returns `structuredContent`
+with `fileCount`, `matchCount`, and `truncated` fields.
+
+An invalid `search_pattern` returns a clear error message (e.g.
+`Invalid regular expression "[invalid": ...`) instead of a raw exception.
 
 **Example:**
 ```javascript
@@ -110,6 +128,10 @@ refactor-mcp cli refactor -s "legacy_sdk" -r "new_sdk" -c "import" -f "src/**/*.
   - `-p, --pattern <pattern>` - Regular expression pattern to search for
   - `-c, --context <context>` - Optional context pattern to filter matches
   - `-f, --files <files>` - Optional file glob pattern to limit search scope
+  - `-i, --ignore-case` - Match case-insensitively
+  - `-m, --multiline` - Multiline mode (^ and $ match line boundaries)
+  - `-w, --whole-word` - Only match whole words
+  - `--max <n>` - Stop after this many matches
   - `--print` - Print matched content to stdout
   - `--matched` - Show only matched text with capture groups
 - `refactor` - Refactor code with regex replacement
@@ -117,6 +139,10 @@ refactor-mcp cli refactor -s "legacy_sdk" -r "new_sdk" -c "import" -f "src/**/*.
   - `-r, --replace <replace>` - Replacement pattern (supports $1, $2, etc.)
   - `-c, --context <context>` - Optional context pattern to filter matches
   - `-f, --files <files>` - Optional file glob pattern to limit search scope
+  - `-i, --ignore-case` - Match case-insensitively
+  - `-m, --multiline` - Multiline mode (^ and $ match line boundaries)
+  - `-w, --whole-word` - Only match whole words
+  - `--max <n>` - Stop after this many replacements
   - `--dry-run` - Preview changes without modifying files
   - `--print` - Print matched content and replacements to stdout
 

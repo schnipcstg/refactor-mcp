@@ -119,7 +119,11 @@ legacy_sdk.initialize();`
         expected: {
           resultCount: 1,
           replacementsGreaterThan: 0,
-          fileContains: ['import new_sdk from', 'legacy_sdk_local'],
+          // The ±5-line context window covers the whole small file, so every
+          // legacy_sdk occurrence is in-context and replaced. (Previously this
+          // expected legacy_sdk_local to survive, which only happened due to a
+          // global-regex lastIndex bug in context filtering.)
+          fileContains: ['import new_sdk from', 'new_sdk_local'],
         },
       },
       {

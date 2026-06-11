@@ -1,11 +1,14 @@
 import { existsSync } from 'fs';
 import { searchFiles, readFileContent } from '../utils/file-utils.js';
 import { groupConsecutiveLines } from '../utils/line-utils.js';
+import { buildRegex, type RegexFlagOptions } from '../utils/regex-utils.js';
 
-export interface SearchOptions {
+export interface SearchOptions extends RegexFlagOptions {
   searchPattern: string;
   contextPattern?: string;
   filePattern?: string;
+  /** Stop after collecting this many matches in total (across all files). */
+  maxMatches?: number;
 }
 
 export interface SearchMatch {
@@ -22,18 +25,39 @@ export interface SearchResult {
   groupedLines: string[];
 }
 
+/** Aggregate statistics describing a search run, suitable for structured output. */
+export interface SearchStats {
+  fileCount: number;
+  matchCount: number;
+  /** True when the run stopped early because `maxMatches` was reached. */
+  truncated: boolean;
+}
+
 export async function performSearch(
   options: SearchOptions
 ): Promise<SearchResult[]> {
   const files = await searchFiles(options.filePattern);
   const results: SearchResult[] = [];
 
-  const searchRegex = new RegExp(options.searchPattern, 'gm');
+  // buildRegex validates the pattern and applies flag/whole-word options. The
+  // context pattern intentionally ignores whole-word (it describes surroundings,
+  // not the token being matched) but honors case/multiline flags.
+  const searchRegex = buildRegex(options.searchPattern, options);
   const contextRegex = options.contextPattern
-    ? new RegExp(options.contextPattern, 'gm')
+    ? buildRegex(options.contextPattern, {
+        caseInsensitive: options.caseInsensitive,
+        multiline: options.multiline,
+      })
     : null;
 
+  const maxMatches =
+    options.maxMatches !== undefined && options.maxMatches > 0
+      ? options.maxMatches
+      : Infinity;
+  let totalMatches = 0;
+
   for (const filePath of files) {
+    if (totalMatches >= maxMatches) break;
     if (!existsSync(filePath)) continue;
 
     const content = readFileContent(filePath);
@@ -43,6 +67,7 @@ export async function performSearch(
     const validMatches: SearchMatch[] = [];
 
     for (const match of matches) {
+      if (totalMatches >= maxMatches) break;
       if (match.index !== undefined) {
         const beforeMatch = content.substring(0, match.index);
         const lineNumber = beforeMatch.split('\n').length;
@@ -61,6 +86,9 @@ export async function performSearch(
           const afterMatchLines = afterMatch.split('\n').slice(0, 5).join('\n');
           const contextArea = beforeMatchLines + match[0] + afterMatchLines;
 
+          // test() advances lastIndex on a global regex; reset so each check is
+          // independent.
+          contextRegex.lastIndex = 0;
           if (contextRegex.test(contextArea)) {
             validMatches.push({
               line: lineNumber,
@@ -69,6 +97,7 @@ export async function performSearch(
                 captureGroups.length > 0 ? captureGroups : undefined,
               matchedText,
             });
+            totalMatches++;
           }
         } else {
           validMatches.push({
@@ -77,6 +106,7 @@ export async function performSearch(
             captureGroups: captureGroups.length > 0 ? captureGroups : undefined,
             matchedText,
           });
+          totalMatches++;
         }
       }
     }
@@ -96,6 +126,18 @@ export async function performSearch(
   }
 
   return results;
+}
+
+/** Compute aggregate stats for a set of search results. */
+export function computeSearchStats(
+  results: SearchResult[],
+  truncated = false
+): SearchStats {
+  return {
+    fileCount: results.length,
+    matchCount: results.reduce((sum, r) => sum + r.matches.length, 0),
+    truncated,
+  };
 }
 
 export interface FormatOptions {

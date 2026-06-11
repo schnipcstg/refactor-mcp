@@ -1,8 +1,16 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { performSearch, formatSearchResults } from './core/search-tool.js';
-import { performRefactor, formatRefactorResults } from './core/refactor-tool.js';
+import {
+  performSearch,
+  formatSearchResults,
+  computeSearchStats,
+} from './core/search-tool.js';
+import {
+  performRefactor,
+  formatRefactorResults,
+  computeRefactorStats,
+} from './core/refactor-tool.js';
 
 // Re-export for backward compatibility
 export { searchFiles, readFileContent, writeFileContent } from './utils/file-utils.js';
@@ -260,6 +268,30 @@ server.registerTool(
         .string()
         .optional()
         .describe('Optional file glob pattern to limit search scope'),
+      dry_run: z
+        .boolean()
+        .optional()
+        .describe(
+          'Preview changes without modifying files (no writes are performed)'
+        ),
+      case_insensitive: z
+        .boolean()
+        .optional()
+        .describe('Match case-insensitively (adds the regex `i` flag)'),
+      multiline: z
+        .boolean()
+        .optional()
+        .describe('Multiline mode so ^ and $ match line boundaries (`m` flag)'),
+      whole_word: z
+        .boolean()
+        .optional()
+        .describe('Only match whole words (wraps the pattern in \\b...\\b)'),
+      max_matches: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe('Stop after this many replacements in total'),
       include_capture_groups: z
         .boolean()
         .optional()
@@ -275,30 +307,56 @@ server.registerTool(
     replace_pattern,
     context_pattern,
     file_pattern,
+    dry_run,
+    case_insensitive,
+    multiline,
+    whole_word,
+    max_matches,
     include_capture_groups,
     include_matched_text,
   }) => {
+    const dryRun = dry_run ?? false;
     try {
       const results = await performRefactor({
         searchPattern: search_pattern,
         replacePattern: replace_pattern,
         contextPattern: context_pattern,
         filePattern: file_pattern,
-        dryRun: false,
+        dryRun,
+        caseInsensitive: case_insensitive,
+        multiline,
+        wholeWord: whole_word,
+        maxMatches: max_matches,
       });
+
+      const replacementTotal = results.reduce(
+        (sum, r) => sum + r.replacements,
+        0
+      );
+      const stats = computeRefactorStats(
+        results,
+        dryRun,
+        max_matches !== undefined && replacementTotal >= max_matches
+      );
 
       const summary = formatRefactorResults(results, {
         includeCaptureGroups: include_capture_groups,
         includeMatchedText: include_matched_text,
-        dryRun: false,
+        dryRun,
       });
 
       return {
         content: [{ type: 'text', text: summary }],
+        structuredContent: { ...stats },
       };
     } catch (error) {
       return {
-        content: [{ type: 'text', text: `Error during refactoring: ${error}` }],
+        content: [
+          {
+            type: 'text',
+            text: error instanceof Error ? error.message : String(error),
+          },
+        ],
         isError: true,
       };
     }
@@ -323,6 +381,24 @@ server.registerTool(
         .string()
         .optional()
         .describe('Optional file glob pattern to limit search scope'),
+      case_insensitive: z
+        .boolean()
+        .optional()
+        .describe('Match case-insensitively (adds the regex `i` flag)'),
+      multiline: z
+        .boolean()
+        .optional()
+        .describe('Multiline mode so ^ and $ match line boundaries (`m` flag)'),
+      whole_word: z
+        .boolean()
+        .optional()
+        .describe('Only match whole words (wraps the pattern in \\b...\\b)'),
+      max_matches: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe('Stop after collecting this many matches in total'),
       include_capture_groups: z
         .boolean()
         .optional()
@@ -333,13 +409,33 @@ server.registerTool(
         .describe('Include matched text in the results'),
     },
   },
-  async ({ search_pattern, context_pattern, file_pattern, include_capture_groups, include_matched_text }) => {
+  async ({
+    search_pattern,
+    context_pattern,
+    file_pattern,
+    case_insensitive,
+    multiline,
+    whole_word,
+    max_matches,
+    include_capture_groups,
+    include_matched_text,
+  }) => {
     try {
       const results = await performSearch({
         searchPattern: search_pattern,
         contextPattern: context_pattern,
         filePattern: file_pattern,
+        caseInsensitive: case_insensitive,
+        multiline,
+        wholeWord: whole_word,
+        maxMatches: max_matches,
       });
+
+      const matchTotal = results.reduce((sum, r) => sum + r.matches.length, 0);
+      const stats = computeSearchStats(
+        results,
+        max_matches !== undefined && matchTotal >= max_matches
+      );
 
       const summary = formatSearchResults(results, {
         includeCaptureGroups: include_capture_groups,
@@ -348,10 +444,16 @@ server.registerTool(
 
       return {
         content: [{ type: 'text', text: summary }],
+        structuredContent: { ...stats },
       };
     } catch (error) {
       return {
-        content: [{ type: 'text', text: `Error during search: ${error}` }],
+        content: [
+          {
+            type: 'text',
+            text: error instanceof Error ? error.message : String(error),
+          },
+        ],
         isError: true,
       };
     }

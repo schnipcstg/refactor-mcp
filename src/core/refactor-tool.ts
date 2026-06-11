@@ -4,13 +4,21 @@ import {
   readFileContent,
   writeFileContent,
 } from '../utils/file-utils.js';
+import {
+  applyWholeWord,
+  buildRegex,
+  buildRegexFlags,
+  type RegexFlagOptions,
+} from '../utils/regex-utils.js';
 
-export interface RefactorOptions {
+export interface RefactorOptions extends RegexFlagOptions {
   searchPattern: string;
   replacePattern: string;
   contextPattern?: string;
   filePattern?: string;
   dryRun?: boolean;
+  /** Stop after this many replacements in total (across all files). */
+  maxMatches?: number;
 }
 
 export interface RefactorMatch {
@@ -28,107 +36,113 @@ export interface RefactorResult {
   modified: boolean;
 }
 
+/** Aggregate statistics describing a refactor run, suitable for structured output. */
+export interface RefactorStats {
+  fileCount: number;
+  replacementCount: number;
+  dryRun: boolean;
+  /** True when the run stopped early because `maxMatches` was reached. */
+  truncated: boolean;
+}
+
 export async function performRefactor(
   options: RefactorOptions
 ): Promise<RefactorResult[]> {
   const files = await searchFiles(options.filePattern);
   const results: RefactorResult[] = [];
 
+  // Validate up front so a bad pattern fails fast with a clear message. The same
+  // source string is reused for the per-match single-replacement regex below to
+  // keep preview and write paths consistent.
+  const searchRegex = buildRegex(options.searchPattern, options);
+  const contextRegex = options.contextPattern
+    ? buildRegex(options.contextPattern, {
+        caseInsensitive: options.caseInsensitive,
+        multiline: options.multiline,
+      })
+    : null;
+
+  // Non-global regex used to compute the replacement for a single matched span.
+  const singleMatchSource = applyWholeWord(options.searchPattern, options);
+  const singleMatchFlags = buildRegexFlags(options).replace('g', '');
+  const singleMatchRegex = new RegExp(singleMatchSource, singleMatchFlags);
+
+  const maxMatches =
+    options.maxMatches !== undefined && options.maxMatches > 0
+      ? options.maxMatches
+      : Infinity;
+  let totalReplacements = 0;
+
   for (const filePath of files) {
+    if (totalReplacements >= maxMatches) break;
     if (!existsSync(filePath)) continue;
 
     const content = readFileContent(filePath);
     const lines = content.split('\n');
-    let modified = false;
-    let fileReplacements = 0;
     const matchedLines: RefactorMatch[] = [];
 
-    const searchRegex = new RegExp(options.searchPattern, 'g');
-    const contextRegex = options.contextPattern
-      ? new RegExp(options.contextPattern, 'g')
-      : null;
+    // Single iteration over all matches builds BOTH the preview rows and the new
+    // file content. Rebuilding the string from match spans (rather than calling
+    // String.replace twice) guarantees the reported matches and the bytes written
+    // to disk are derived from exactly the same set of matches, in order.
+    const segments: string[] = [];
+    let lastIndex = 0;
+    let fileReplacements = 0;
 
-    let newContent = content;
+    const matches = [...content.matchAll(searchRegex)];
+    for (const match of matches) {
+      if (match.index === undefined) continue;
+      if (totalReplacements >= maxMatches) break;
 
-    if (contextRegex) {
-      const matches = [...content.matchAll(searchRegex)];
-      for (const match of matches) {
-        if (match.index !== undefined) {
-          const beforeMatch = content.substring(0, match.index);
-          const afterMatch = content.substring(match.index + match[0].length);
-          const contextBefore = beforeMatch.split('\n').slice(-5).join('\n');
-          const contextAfter = afterMatch.split('\n').slice(0, 5).join('\n');
-          const contextArea = contextBefore + match[0] + contextAfter;
+      const matchStart = match.index;
+      const matchEnd = matchStart + match[0].length;
 
-          if (contextRegex.test(contextArea)) {
-            const lineNumber = beforeMatch.split('\n').length;
-            const originalLine = lines[lineNumber - 1];
+      if (contextRegex) {
+        const beforeMatch = content.substring(0, matchStart);
+        const afterMatch = content.substring(matchEnd);
+        const contextBefore = beforeMatch.split('\n').slice(-5).join('\n');
+        const contextAfter = afterMatch.split('\n').slice(0, 5).join('\n');
+        const contextArea = contextBefore + match[0] + contextAfter;
 
-            // Extract capture groups if any
-            const captureGroups = match
-              .slice(1)
-              .filter(group => group !== undefined);
-
-            const replaced = match[0].replace(
-              new RegExp(options.searchPattern),
-              options.replacePattern
-            );
-
-            matchedLines.push({
-              line: lineNumber,
-              content: originalLine,
-              original: match[0],
-              replaced,
-              captureGroups:
-                captureGroups.length > 0 ? captureGroups : undefined,
-            });
-
-            newContent = newContent.replace(match[0], replaced);
-            fileReplacements++;
-            modified = true;
-          }
-        }
-      }
-    } else {
-      const matches = [...content.matchAll(searchRegex)];
-      for (const match of matches) {
-        if (match.index !== undefined) {
-          const beforeMatch = content.substring(0, match.index);
-          const lineNumber = beforeMatch.split('\n').length;
-          const originalLine = lines[lineNumber - 1];
-
-          // Extract capture groups if any
-          const captureGroups = match
-            .slice(1)
-            .filter(group => group !== undefined);
-
-          const replaced = match[0].replace(
-            new RegExp(options.searchPattern),
-            options.replacePattern
-          );
-
-          matchedLines.push({
-            line: lineNumber,
-            content: originalLine,
-            original: match[0],
-            replaced,
-            captureGroups: captureGroups.length > 0 ? captureGroups : undefined,
-          });
+        contextRegex.lastIndex = 0;
+        if (!contextRegex.test(contextArea)) {
+          continue; // match present but not in required context: leave untouched
         }
       }
 
-      const replacedContent = content.replace(
-        searchRegex,
+      const beforeMatch = content.substring(0, matchStart);
+      const lineNumber = beforeMatch.split('\n').length;
+      const originalLine = lines[lineNumber - 1];
+      const captureGroups = match.slice(1).filter(group => group !== undefined);
+
+      // Compute the replacement for just this matched span so capture-group
+      // substitutions ($1, $2, ...) are applied correctly.
+      const replaced = match[0].replace(
+        singleMatchRegex,
         options.replacePattern
       );
-      if (replacedContent !== content) {
-        newContent = replacedContent;
-        fileReplacements = (content.match(searchRegex) || []).length;
-        modified = true;
-      }
+
+      // Append the untouched gap before this match, then the replacement.
+      segments.push(content.slice(lastIndex, matchStart));
+      segments.push(replaced);
+      lastIndex = matchEnd;
+
+      matchedLines.push({
+        line: lineNumber,
+        content: originalLine,
+        original: match[0],
+        replaced,
+        captureGroups: captureGroups.length > 0 ? captureGroups : undefined,
+      });
+
+      fileReplacements++;
+      totalReplacements++;
     }
 
-    if (modified) {
+    if (fileReplacements > 0) {
+      segments.push(content.slice(lastIndex));
+      const newContent = segments.join('');
+
       if (!options.dryRun) {
         writeFileContent(filePath, newContent);
       }
@@ -143,6 +157,20 @@ export async function performRefactor(
   }
 
   return results;
+}
+
+/** Compute aggregate stats for a set of refactor results. */
+export function computeRefactorStats(
+  results: RefactorResult[],
+  dryRun = false,
+  truncated = false
+): RefactorStats {
+  return {
+    fileCount: results.length,
+    replacementCount: results.reduce((sum, r) => sum + r.replacements, 0),
+    dryRun,
+    truncated,
+  };
 }
 
 export interface RefactorFormatOptions {

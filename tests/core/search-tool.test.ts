@@ -95,7 +95,10 @@ legacy_sdk.initialize();`
         },
         expected: {
           resultCount: 1,
-          matchCount: 2,
+          // All four occurrences fall within the ±5-line context window that
+          // contains the `import` line, so all match. (Previously this asserted
+          // 2 due to a global-regex lastIndex bug in context filtering.)
+          matchCount: 4,
           hasImport: true,
         },
       },
